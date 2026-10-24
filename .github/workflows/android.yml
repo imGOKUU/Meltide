@@ -3,6 +3,7 @@ name: Android CI
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
 
 concurrency:
@@ -36,6 +37,127 @@ jobs:
           path: |
             app/build/reports/
             app/build/test-results/
+
+  # On every push to main: build the dev APK and replace it on the rolling
+  # "dev-latest" pre-release, so testers always have one link to the newest build.
+  publish-dev:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # Dev builds are debug-signed. CI would otherwise generate a new debug key
+      # every run, and Android refuses to update an app whose signature changed.
+      - name: Restore the shared debug keystore
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$DEBUG_KEYSTORE_BASE64" ]; then
+            echo "::error::DEBUG_KEYSTORE_BASE64 secret is not set - see RELEASING.md"
+            exit 1
+          fi
+          mkdir -p ~/.android
+          echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+
+      - name: Build dev APK
+        run: ./gradlew assembleDev --stacktrace
+
+      - name: Publish to the dev-latest pre-release
+        run: |
+          git tag -f dev-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/dev-latest
+          notes="Latest dev build from main @ ${GITHUB_SHA::7}. Updated automatically on every push."
+          if gh release view dev-latest > /dev/null 2>&1; then
+            gh release edit dev-latest --notes "$notes"
+            for asset in $(gh release view dev-latest --json assets --jq '.assets[].name'); do
+              gh release delete-asset dev-latest "$asset" --yes
+            done
+          else
+            gh release create dev-latest --prerelease --title "Meltide-dev (latest)" --notes "$notes"
+          fi
+          gh release upload dev-latest app/build/outputs/meltide/*.apk
+
+  # On a version tag (e.g. v1.0.1): build the signed R8 release APK and attach
+  # it to a GitHub release for that tag. The tag must match versionName.
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Check the tag matches versionName
+        run: |
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match versionName $version in app/build.gradle.kts"
+            exit 1
+          fi
+
+      # Writes keystore.properties, which app/build.gradle.kts reads for release signing.
+      - name: Restore the release keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "::error::RELEASE_KEYSTORE_BASE64 secret is not set - see RELEASING.md"
+            exit 1
+          fi
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > release.jks
+          {
+            echo "storeFile=release.jks"
+            echo "storePassword=$RELEASE_STORE_PASSWORD"
+            echo "keyAlias=$RELEASE_KEY_ALIAS"
+            echo "keyPassword=$RELEASE_KEY_PASSWORD"
+          } > keystore.properties
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Publish the GitHub release
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" app/build/outputs/meltide/Meltide-$version.apk --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --title "Meltide $version" --generate-notes \
+              app/build/outputs/meltide/Meltide-$version.apk
+          fi
+
+      # mapping.txt de-obfuscates R8 crash stack traces from this exact build.
+      - name: Keep the R8 mapping
+        uses: actions/upload-artifact@v7
+        with:
+          name: mapping-${{ github.ref_name }}
+          path: app/build/outputs/mapping/release/mapping.txt
 
   # Instrumented tests on an emulator - the database migration tests live
   # here, so a schema change can't merge without a working migration.

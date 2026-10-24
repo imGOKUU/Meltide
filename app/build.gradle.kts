@@ -1,3 +1,4 @@
+import com.android.build.api.artifact.SingleArtifact
 import java.util.Properties
 
 plugins {
@@ -17,16 +18,11 @@ android {
         applicationId = "com.meltide.app"
         minSdk = 24
         targetSdk = 37
-        // Bump versionCode by one for every Play upload; versionName is what users see.
         versionCode = 1
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-
-    // Release signing reads keystore.properties (never committed - see
-    // RELEASING.md). Without it, release builds are produced unsigned, which
-    // is fine for CI and for checking R8, but not for a Play upload.
     val keystoreFile = rootProject.file("keystore.properties")
     val releaseSigning = if (keystoreFile.exists()) {
         val props = Properties().apply { keystoreFile.inputStream().use(::load) }
@@ -42,9 +38,6 @@ android {
 
     buildTypes {
         release {
-            // R8: shrinks, optimizes and obfuscates code, and removes unused
-            // resources. Hilt, Room, DataStore and Compose ship their own keep
-            // rules; app-specific ones go in proguard-rules.pro.
             optimization {
                 enable = true
             }
@@ -54,25 +47,62 @@ android {
             )
             releaseSigning?.let { signingConfig = it }
         }
+        create("dev") {
+            initWith(getByName("release"))
+            optimization {
+                enable = true
+            }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = signingConfigs.getByName("debug")
+            applicationIdSuffix = ".dev"
+            resValue("string", "app_name", "Meltide-dev")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
-        // java.time (Instant, LocalDate, Duration) is API 26+, but minSdk is 24 -
-        // desugaring backports it so the app doesn't crash on Android 7.x.
         isCoreLibraryDesugaringEnabled = true
     }
     buildFeatures {
         compose = true
+        resValues = true
     }
-    // Room's exported schema JSON doubles as the input for migration tests.
     sourceSets {
         getByName("androidTest").assets.directories.add("$projectDir/schemas")
     }
 }
 
-// Every database version's schema is written to app/schemas and committed,
-// so each migration can be checked against the exact schema it starts from.
+val devVersionName = "0.0.1"
+
+val releaseVersionName = android.defaultConfig.versionName
+
+androidComponents {
+    onVariants(selector().withBuildType("dev")) { variant ->
+        variant.outputs.forEach { it.versionName.set(devVersionName) }
+    }
+
+    // AGP 9 has no outputFileName hook, so copy the APK out under a shareable name.
+    onVariants { variant ->
+        val apkName = when (variant.buildType) {
+            "dev" -> "Meltide-dev-$devVersionName.apk"
+            "release" -> "Meltide-$releaseVersionName.apk"
+            else -> return@onVariants
+        }
+        val variantName = variant.name.replaceFirstChar { it.uppercase() }
+        val copyApk = tasks.register<Copy>("copy${variantName}Apk") {
+            from(variant.artifacts.get(SingleArtifact.APK)) {
+                include("*.apk")
+                rename { apkName }
+            }
+            into(layout.buildDirectory.dir("outputs/meltide"))
+        }
+        tasks.matching { it.name == "assemble$variantName" }.configureEach { finalizedBy(copyApk) }
+    }
+}
+
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }

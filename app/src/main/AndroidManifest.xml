@@ -5,6 +5,16 @@
     <!-- Android 13+: the session countdown notification (asked for during onboarding). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Android 11+ package visibility: without this, InstalledAppsProvider only
+         sees system apps. Declaring the launcher intent makes every launchable
+         app visible, without QUERY_ALL_PACKAGES (which Play restricts). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".FocusApplication"
         android:allowBackup="true"

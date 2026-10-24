@@ -15,9 +15,10 @@ data class InstalledApp(
 )
 
 /**
- * Resolving ACTION_MAIN/CATEGORY_LAUNCHER activities is exempt from Android
- * 11+ package-visibility filtering, so this works with no <queries> manifest
- * entry and no QUERY_ALL_PACKAGES permission.
+ * Lists apps with an ACTION_MAIN/CATEGORY_LAUNCHER activity. On Android 11+
+ * this relies on the matching <queries> entry in the manifest - without it,
+ * package-visibility filtering hides user-installed apps. No
+ * QUERY_ALL_PACKAGES permission needed.
  */
 interface InstalledAppsProvider {
     fun getLaunchableApps(): List<InstalledApp>

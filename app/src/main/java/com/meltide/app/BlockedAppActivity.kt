@@ -53,10 +53,11 @@ class BlockedAppActivity : ComponentActivity() {
     private var blockInfo by mutableStateOf<BlockInfo?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Same light system bars as the main app (dark icons on cream).
+        // This screen uses the dark theme (FocusTheme(darkTheme = true) below),
+        // so it needs light system-bar icons - the opposite of the main app.
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         super.onCreate(savedInstanceState)
         blockInfo = intent.toBlockInfo()
